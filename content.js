@@ -29,10 +29,7 @@ window.addEventListener('load', function() {
 let lastVideoKey = ''
 
 function getVideoKey() {
-  const bvid = window.BilibiliSubtitle.getBVID()
-  const page = window.BilibiliSubtitle.getPageNumber()
-  if (!bvid) return ''
-  return `${bvid}-p${page}`
+  return window.BilibiliSubtitle.getVideoKey ? window.BilibiliSubtitle.getVideoKey() : ''
 }
 
 lastVideoKey = getVideoKey()

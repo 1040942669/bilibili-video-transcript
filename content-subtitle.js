@@ -8,6 +8,7 @@ window.BilibiliSubtitle = window.BilibiliSubtitle || {}
 
 // 状态变量
 window.BilibiliSubtitle.isLoading = false  // 标记是否正在加载
+window.BilibiliSubtitle.subtitleRequestId = 0  // 字幕请求序号，避免旧请求覆盖新页面
 window.BilibiliSubtitle.hasInitializedUI = false  // 标记UI是否已初始化（全局）
 window.BilibiliSubtitle.subtitleListCache = null  // 缓存字幕列表
 window.BilibiliSubtitle.currentSubtitles = window.BilibiliSubtitle.currentSubtitles || []
@@ -225,12 +226,64 @@ window.BilibiliSubtitle.isAiSubtitle = function(subtitle) {
 /**
  * 标准化字幕来源字段
  */
+window.BilibiliSubtitle.getSubtitleUrl = function(subtitle) {
+  if (!subtitle) return ''
+
+  const candidates = [
+    subtitle.subtitle_url,
+    subtitle.subtitleUrl,
+    subtitle.url,
+    subtitle.ai_subtitle_url,
+    subtitle.aiSubtitleUrl,
+    subtitle.source_hint?.subtitle_url,
+    subtitle.source_hint?.subtitleUrl,
+    subtitle.source_hint?.url,
+    subtitle.subtitle?.subtitle_url,
+    subtitle.subtitle?.url
+  ]
+
+  const url = candidates.find((item) => typeof item === 'string' && item.trim())
+  return url ? url.trim() : ''
+}
+
+
+window.BilibiliSubtitle.isSubtitleForVideo = function(subtitle, videoInfo) {
+  if (!window.BilibiliSubtitle.isCheesePage?.()) return true
+
+  const subtitleUrl = window.BilibiliSubtitle.getSubtitleUrl(subtitle)
+  if (!subtitleUrl || !videoInfo?.aid || !videoInfo?.cid) return false
+
+  const normalizedUrl = subtitleUrl.toLowerCase()
+  const aid = String(videoInfo.aid)
+  const cid = String(videoInfo.cid)
+  return normalizedUrl.includes(`${aid}${cid}`) ||
+    normalizedUrl.includes(`/${aid}/`) ||
+    normalizedUrl.includes(`aid=${aid}`) ||
+    normalizedUrl.includes(`cid=${cid}`)
+}
+
 window.BilibiliSubtitle.normalizeSubtitleList = function(subtitleList) {
   if (!Array.isArray(subtitleList)) return []
-  return subtitleList.map((subtitle) => ({
-    ...subtitle,
-    source: window.BilibiliSubtitle.getSubtitleSource(subtitle)
-  }))
+  const seenKeys = new Set()
+  return subtitleList
+    .map((subtitle) => {
+      const subtitleUrl = window.BilibiliSubtitle.getSubtitleUrl(subtitle)
+      const normalizedSubtitle = {
+        ...subtitle,
+        subtitle_url: subtitleUrl,
+        source: window.BilibiliSubtitle.getSubtitleSource({
+          ...subtitle,
+          subtitle_url: subtitleUrl
+        })
+      }
+      normalizedSubtitle._dedupe_key = `${normalizedSubtitle.lan || ''}|${normalizedSubtitle.source || ''}|${subtitleUrl || window.BilibiliSubtitle.getSubtitleOptionValue(normalizedSubtitle)}`
+      return normalizedSubtitle
+    })
+    .filter((subtitle) => {
+      if (seenKeys.has(subtitle._dedupe_key)) return false
+      seenKeys.add(subtitle._dedupe_key)
+      return true
+    })
 }
 
 /**
@@ -266,15 +319,16 @@ window.BilibiliSubtitle.sortSubtitleList = function(subtitleList) {
  * 选择默认字幕：优先人工中文字幕，再人工任意语种，再未知，最后AI
  */
 window.BilibiliSubtitle.pickDefaultSubtitle = function(subtitleList) {
-  if (!subtitleList || subtitleList.length === 0) return null
+  const availableSubtitles = (subtitleList || []).filter((s) => window.BilibiliSubtitle.getSubtitleUrl(s))
+  if (availableSubtitles.length === 0) return null
 
-  const humanZhSubtitle = subtitleList.find((s) => s.lan === 'zh-CN' && window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.HUMAN)
-  const humanSubtitle = subtitleList.find((s) => window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.HUMAN)
-  const unknownZhSubtitle = subtitleList.find((s) => s.lan === 'zh-CN' && window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.UNKNOWN)
-  const unknownSubtitle = subtitleList.find((s) => window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.UNKNOWN)
-  const zhSubtitle = subtitleList.find((s) => s.lan === 'zh-CN')
+  const humanZhSubtitle = availableSubtitles.find((s) => s.lan === 'zh-CN' && window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.HUMAN)
+  const humanSubtitle = availableSubtitles.find((s) => window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.HUMAN)
+  const unknownZhSubtitle = availableSubtitles.find((s) => s.lan === 'zh-CN' && window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.UNKNOWN)
+  const unknownSubtitle = availableSubtitles.find((s) => window.BilibiliSubtitle.getSubtitleSource(s) === window.BilibiliSubtitle.SUBTITLE_SOURCE.UNKNOWN)
+  const zhSubtitle = availableSubtitles.find((s) => s.lan === 'zh-CN')
 
-  return humanZhSubtitle || humanSubtitle || unknownZhSubtitle || unknownSubtitle || zhSubtitle || subtitleList[0]
+  return humanZhSubtitle || humanSubtitle || unknownZhSubtitle || unknownSubtitle || zhSubtitle || availableSubtitles[0]
 }
 
 /**
@@ -308,13 +362,14 @@ window.BilibiliSubtitle.fetchSubtitleByAPI = async function() {
   }
   
   window.BilibiliSubtitle.isLoading = true
+  const requestId = ++window.BilibiliSubtitle.subtitleRequestId
   window.BilibiliSubtitle.updateSubtitleSelector(null, null, window.BilibiliSubtitle.SUBTITLE_SELECTOR_STATES.LOADING)
 
   if (window.BilibiliSubtitle.setEmptyState) {
     window.BilibiliSubtitle.setEmptyState(window.BilibiliSubtitle.EMPTY_STATES.LOADING)
   }
 
-  const danmukuBox = document.getElementById('danmukuBox')
+  const danmukuBox = window.BilibiliSubtitle.getDanmukuBox ? window.BilibiliSubtitle.getDanmukuBox() : document.getElementById('danmukuBox')
   if (!danmukuBox) {
     window.BilibiliSubtitle.logError('[API] 未找到danmukuBox容器')
     window.BilibiliSubtitle.updateSubtitleSelector(null, null, window.BilibiliSubtitle.SUBTITLE_SELECTOR_STATES.ERROR)
@@ -326,9 +381,9 @@ window.BilibiliSubtitle.fetchSubtitleByAPI = async function() {
   }
 
   try {
-    const bvid = window.BilibiliSubtitle.getBVID()
-    if (!bvid) {
-      window.BilibiliSubtitle.logError('[API] 无法获取BVID')
+    const videoInfo = await window.BilibiliSubtitle.fetchCurrentVideoInfoByAPI()
+    if (!videoInfo?.aid || !videoInfo?.cid) {
+      window.BilibiliSubtitle.logError('[API] 无法获取视频信息')
       window.BilibiliSubtitle.updateSubtitleSelector(null, null, window.BilibiliSubtitle.SUBTITLE_SELECTOR_STATES.ERROR)
       window.BilibiliSubtitle.isLoading = false
       if (window.BilibiliSubtitle.setEmptyState) {
@@ -337,10 +392,13 @@ window.BilibiliSubtitle.fetchSubtitleByAPI = async function() {
       return
     }
 
-    const videoInfo = await window.BilibiliSubtitle.fetchVideoInfoByAPI(bvid)
     const { aid, cid } = videoInfo
 
-    const subtitleList = await window.BilibiliSubtitle.fetchSubtitleListByAPI(aid, cid)
+    const subtitleList = await window.BilibiliSubtitle.fetchSubtitleListByAPI(
+      aid,
+      cid,
+      window.BilibiliSubtitle.isCheesePage?.() ? '' : videoInfo.bvid
+    )
     const viewSubtitleList = videoInfo?.subtitle?.list || []
 
     if (!subtitleList || subtitleList.length === 0) {
@@ -394,19 +452,34 @@ window.BilibiliSubtitle.fetchSubtitleByAPI = async function() {
 
     // 人工字幕优先排序后缓存
     const sortedSubtitleList = window.BilibiliSubtitle.sortSubtitleList(normalizedSubtitleList)
-    window.BilibiliSubtitle.subtitleListCache = sortedSubtitleList
+    const urlSubtitleList = sortedSubtitleList.filter((subtitle) => window.BilibiliSubtitle.getSubtitleUrl(subtitle))
+    if (urlSubtitleList.length !== sortedSubtitleList.length) {
+      window.BilibiliSubtitle.logDebug('[API] 已过滤无字幕URL的字幕项:', sortedSubtitleList.filter((subtitle) => !window.BilibiliSubtitle.getSubtitleUrl(subtitle)))
+    }
 
-    const defaultSubtitle = window.BilibiliSubtitle.pickDefaultSubtitle(sortedSubtitleList)
+    const availableSubtitleList = urlSubtitleList.filter((subtitle) => window.BilibiliSubtitle.isSubtitleForVideo(subtitle, videoInfo))
+    if (availableSubtitleList.length !== urlSubtitleList.length) {
+      window.BilibiliSubtitle.logDebug('[API] 已过滤非当前课时字幕项:', urlSubtitleList.filter((subtitle) => !window.BilibiliSubtitle.isSubtitleForVideo(subtitle, videoInfo)))
+    }
+    window.BilibiliSubtitle.subtitleListCache = availableSubtitleList
+
+    const defaultSubtitle = window.BilibiliSubtitle.pickDefaultSubtitle(availableSubtitleList)
     const defaultSubtitleOptionValue = defaultSubtitle
       ? window.BilibiliSubtitle.getSubtitleOptionValue(defaultSubtitle)
       : null
 
     // 更新字幕选择器
-    window.BilibiliSubtitle.updateSubtitleSelector(sortedSubtitleList, defaultSubtitleOptionValue)
+    window.BilibiliSubtitle.updateSubtitleSelector(availableSubtitleList, defaultSubtitleOptionValue)
 
     const subtitles = defaultSubtitle
-      ? await window.BilibiliSubtitle.fetchSubtitleContentByAPI(defaultSubtitle.subtitle_url)
+      ? await window.BilibiliSubtitle.fetchSubtitleContentByAPI(window.BilibiliSubtitle.getSubtitleUrl(defaultSubtitle))
       : []
+
+    if (requestId !== window.BilibiliSubtitle.subtitleRequestId) {
+      window.BilibiliSubtitle.logDebug('[API] 忽略过期字幕请求:', requestId)
+      window.BilibiliSubtitle.isLoading = false
+      return
+    }
 
     window.BilibiliSubtitle.logInfo('[API] 字幕加载完成')
 
@@ -435,7 +508,7 @@ window.BilibiliSubtitle.selectSubtitle = async function(subtitle) {
     if (window.BilibiliSubtitle.setEmptyState) {
       window.BilibiliSubtitle.setEmptyState(window.BilibiliSubtitle.EMPTY_STATES.LOADING)
     }
-    const subtitles = await window.BilibiliSubtitle.fetchSubtitleContentByAPI(subtitle.subtitle_url)
+    const subtitles = await window.BilibiliSubtitle.fetchSubtitleContentByAPI(window.BilibiliSubtitle.getSubtitleUrl(subtitle))
     const displayState = subtitles && subtitles.length > 0
       ? null
       : window.BilibiliSubtitle.EMPTY_STATES.NO_SUBTITLE

@@ -326,7 +326,7 @@ window.BilibiliSubtitle.applyContentContainerStyle = function(container) {
 window.BilibiliSubtitle.initUI = function() {
   window.BilibiliSubtitle.logDebug('[UI] initUI() 开始')
 
-  const danmukuBox = document.getElementById('danmukuBox')
+  const danmukuBox = window.BilibiliSubtitle.getDanmukuBox ? window.BilibiliSubtitle.getDanmukuBox() : document.getElementById('danmukuBox')
   if (!danmukuBox) {
     window.BilibiliSubtitle.logDebug('[UI] initUI() danmukuBox不存在')
     return
@@ -346,7 +346,7 @@ window.BilibiliSubtitle.initUI = function() {
  * 创建UI容器
  */
 window.BilibiliSubtitle.createUI = function() {
-  const danmukuBox = document.getElementById('danmukuBox')
+  const danmukuBox = window.BilibiliSubtitle.getDanmukuBox ? window.BilibiliSubtitle.getDanmukuBox() : document.getElementById('danmukuBox')
   if (!danmukuBox) return
 
   window.BilibiliSubtitle.logDebug('[UI] 创建容器')
